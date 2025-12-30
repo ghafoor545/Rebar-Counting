@@ -1,4 +1,6 @@
 import os
+os.environ["ORT_LOG_VERBOSITY_LEVEL"] = "1"   # or 0
+os.environ["ORT_LOG_SEVERITY_LEVEL"] = "3"    # 3 = error only
 import uuid
 import base64
 from typing import Optional
@@ -254,7 +256,7 @@ def preprocess_for_onnx(image_bgr, in_hw):
     return img, r, dwdh
 
 
-def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000):
+def detect_rebars(image_bgr, model, class_id=0, conf=0.5, iou=0.5, max_det=10000):
     try:
         sess = model["sess"]
         in_name = model["in_name"]
@@ -373,7 +375,7 @@ def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000
         dets_sorted = sorted(dets_xyxy, key=lambda bb: bb[1]) if dets_xyxy else []
         for (x1, y1, x2, y2) in dets_sorted:
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (80, 250, 180), 3)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (80, 250, 180), 2)
 
         count = len(dets_sorted)
 

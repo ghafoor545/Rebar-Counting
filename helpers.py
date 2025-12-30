@@ -20,10 +20,7 @@ def scroll_top():
 
 
 def show_image_full_width(img, caption=None):
-    try:
-        st.image(img, caption=caption, use_container_width=True)
-    except TypeError:
-        st.image(img, caption=caption, use_column_width=True)
+    st.image(img, caption=caption, width="stretch")
 
 
 def flash(kind: str, text: str):

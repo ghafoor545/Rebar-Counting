@@ -92,9 +92,9 @@ div.block-container{
 
         b1, b2 = st.columns([2, 1])
         with b1:
-            submit_login = st.form_submit_button("Sign In", use_container_width=True)
+            submit_login = st.form_submit_button("Sign In", width="stretch")
         with b2:
-            goto_signup = st.form_submit_button("Sign Up", use_container_width=True)
+            goto_signup = st.form_submit_button("Sign Up", width="stretch")
 
     if goto_signup:
         ss["page"] = "signup"
@@ -160,11 +160,11 @@ div.block-container{
         c1, c2 = st.columns([1, 1])
         with c1:
             submit_signup = st.form_submit_button(
-                "Create Account", use_container_width=True
+                "Create Account", width="stretch"
             )
         with c2:
             back_login = st.form_submit_button(
-                "Back to Login", use_container_width=True
+                "Back to Login", width="stretch"
             )
 
     if back_login:
@@ -416,7 +416,7 @@ def page_dashboard():
         # From live source
         with tab_source:
             cap = st.button(
-                "Capture & Count", use_container_width=True, key="cap_from_source"
+                "Capture & Count", width="stretch", key="cap_from_source"
             )
             if cap:
                 if ss["source"] == "ip":
@@ -494,7 +494,7 @@ def page_dashboard():
             with up_col2:
                 run_upload = st.button(
                     "Detect Uploaded Image",
-                    use_container_width=True,
+                    width="stretch",
                     key="detect_upload",
                 )
 
@@ -666,7 +666,7 @@ def page_history():
                             )
                 with cc2:
                     if st.button("Delete", key=f"del_{r['id']}"):
-                        if delete_detection(r["id"], ss["user"]["id"]):
+                         if delete_detection(r["id"], ss["user"]["id"]):
                             st.success("Deleted.")
                             do_rerun()
                 _wrap_bottom = st.markdown("</div>", unsafe_allow_html=True)
