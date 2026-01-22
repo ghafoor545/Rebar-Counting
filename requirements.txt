@@ -4,3 +4,10 @@ opencv-python
 onnxruntime
 depthai
 requests
+
+# OLED display
+luma.core
+luma.oled
+
+# Image handling (usually pulled in by the above, but explicit is safer)
+Pillow

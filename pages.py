@@ -32,6 +32,11 @@ from oak_utils import (
     grab_oak_frame,
     close_oak_device,
 )
+from oled_display import (
+    oled_show_processing,
+    oled_show_count,
+    oled_show_message,
+)
 
 
 def page_login():
@@ -252,7 +257,7 @@ def page_dashboard():
         current_idx = 0 if ss["source"] == "ip" else 1
         source_choice = st.radio(
             "Feed Source",
-            options=["IP Webcam", "OAK-D Pro"],
+            options=["IP Webcam", "Camera"],
             horizontal=True,
             index=current_idx,
             key="source_radio",
@@ -419,18 +424,34 @@ def page_dashboard():
                 "Capture & Count", width="stretch", key="cap_from_source"
             )
             if cap:
+                # OLED: show processing status
+                try:
+                    oled_show_processing()
+                except Exception:
+                    pass  # Don't crash if OLED not available
+
                 if ss["source"] == "ip":
                     img_bgr, err = fetch_snapshot(ss.get("snapshot_url", ""))
                     stream_url = ss.get("video_url", "")
                     snapshot_url = ss.get("snapshot_url", "")
                     if err:
                         st.error(err)
+                        # OLED: show error
+                        try:
+                            oled_show_message("IP Error", err[:12])  # short error on OLED
+                        except Exception:
+                            pass
                     else:
                         processed_rgb, count, derr = detect_rebars(
                             img_bgr, model, conf=0.6, iou=0.5, max_det=10000
                         )
                         if derr:
                             st.error(derr)
+                            # OLED: show error
+                            try:
+                                oled_show_message("Detect Error", derr[:12])
+                            except Exception:
+                                pass
                         else:
                             det_id = record_detection(
                                 ss["user"]["id"],
@@ -446,6 +467,13 @@ def page_dashboard():
                             if len(ss["captured_images"]) > MAX_CAP:
                                 ss["captured_images"] = ss["captured_images"][-MAX_CAP:]
                             st.success(f"Captured from IP. Detected rebars: {count}")
+
+                            # OLED: show final count
+                            try:
+                                oled_show_count(count)
+                            except Exception:
+                                pass
+
                             show_image_full_width(
                                 processed_rgb,
                                 caption=f"Detected rebars: {count}",
@@ -454,12 +482,22 @@ def page_dashboard():
                     frame, oerr = grab_oak_frame(ss, wait_sec=2.0)
                     if oerr:
                         st.error(oerr)
+                        # OLED: show error
+                        try:
+                            oled_show_message("OAK Error", oerr[:12])
+                        except Exception:
+                            pass
                     else:
                         processed_rgb, count, derr = detect_rebars(
                             frame, model, conf=0.6, iou=0.5, max_det=10000
                         )
                         if derr:
                             st.error(derr)
+                            # OLED: show error
+                            try:
+                                oled_show_message("Detect Error", derr[:12])
+                            except Exception:
+                                pass
                         else:
                             det_id = record_detection(
                                 ss["user"]["id"],
@@ -477,6 +515,13 @@ def page_dashboard():
                             st.success(
                                 f"Captured from OAK-D Pro. Detected rebars: {count}"
                             )
+
+                            # OLED: show final count
+                            try:
+                                oled_show_count(count)
+                            except Exception:
+                                pass
+
                             show_image_full_width(
                                 processed_rgb,
                                 caption=f"Detected rebars: {count}",
@@ -499,8 +544,19 @@ def page_dashboard():
                 )
 
             if run_upload:
+                # OLED: show processing
+                try:
+                    oled_show_processing()
+                except Exception:
+                    pass
+
                 if not uploaded_file:
                     st.warning("Please upload an image.")
+                    # OLED: show error
+                    try:
+                        oled_show_message("Upload Error", "No file")
+                    except Exception:
+                        pass
                 else:
                     file_bytes = np.frombuffer(
                         uploaded_file.getvalue(), np.uint8
@@ -508,12 +564,22 @@ def page_dashboard():
                     img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                     if img_bgr is None:
                         st.error("Could not decode the uploaded image.")
+                        # OLED: show error
+                        try:
+                            oled_show_message("Decode Error")
+                        except Exception:
+                            pass
                     else:
                         processed_rgb, count, derr = detect_rebars(
                             img_bgr, model, conf=0.6, iou=0.5, max_det=10000
                         )
                         if derr:
                             st.error(derr)
+                            # OLED: show error
+                            try:
+                                oled_show_message("Detect Error", derr[:12])
+                            except Exception:
+                                pass
                         else:
                             det_id = record_detection(
                                 ss["user"]["id"],
@@ -531,6 +597,13 @@ def page_dashboard():
                             st.success(
                                 f"Uploaded image processed. Detected rebars: {count}"
                             )
+
+                            # OLED: show final count
+                            try:
+                                oled_show_count(count)
+                            except Exception:
+                                pass
+
                             show_image_full_width(
                                 processed_rgb,
                                 caption=f"Detected rebars: {count}",
@@ -556,7 +629,7 @@ def page_dashboard():
     else:
         gallery_html = (
             '<div style="color:#d7e2ff;">No captures yet. '
-            "Click “Capture & Count” or upload an image.</div>"
+            "Click \"Capture & Count\" or upload an image.</div>"
         )
 
     st.markdown(
@@ -666,7 +739,7 @@ def page_history():
                             )
                 with cc2:
                     if st.button("Delete", key=f"del_{r['id']}"):
-                         if delete_detection(r["id"], ss["user"]["id"]):
+                        if delete_detection(r["id"], ss["user"]["id"]):
                             st.success("Deleted.")
                             do_rerun()
                 _wrap_bottom = st.markdown("</div>", unsafe_allow_html=True)
