@@ -236,7 +236,7 @@ def page_dashboard():
         '<div class="dashboard-wrap">'
         '<div class="card hero-card">'
         "<h1>Rebar Counting</h1>"
-        "<p>Experience seamless live monitoring with Bundle Detection.</p>"
+        "<p>Experience seamless live monitoring.</p>"
         "</div>"
         "</div>",
         unsafe_allow_html=True,
@@ -442,8 +442,7 @@ def page_dashboard():
                         except Exception:
                             pass
                     else:
-                        # FIX: Now receiving 4 values (processed_rgb, count, derr, bundle_info)
-                        processed_rgb, count, derr, bundle_info = detect_rebars(
+                        processed_rgb, count, derr = detect_rebars(
                             img_bgr, model, conf=0.6, iou=0.5, max_det=10000
                         )
                         if derr:
@@ -454,33 +453,20 @@ def page_dashboard():
                             except Exception:
                                 pass
                         else:
-                            # Record detection with bundle info
                             det_id = record_detection(
                                 ss["user"]["id"],
                                 processed_rgb,
                                 count,
                                 stream_url,
                                 snapshot_url,
-                                bundle_info,  # Pass bundle_info to database
                             )
-                            
-                            # Store in session with bundle info
-                            ss["captured_images"].append({
-                                "id": det_id, 
-                                "image": processed_rgb, 
-                                "count": count,
-                                "bundle_info": bundle_info
-                            })
-                            
+                            ss["captured_images"].append(
+                                {"id": det_id, "image": processed_rgb, "count": count}
+                            )
                             MAX_CAP = 48
                             if len(ss["captured_images"]) > MAX_CAP:
                                 ss["captured_images"] = ss["captured_images"][-MAX_CAP:]
-                            
-                            # Show success message with bundle details
-                            if bundle_info and bundle_info['total_bundles'] > 0:
-                                st.success(f"Captured from IP. Detected: {count} rebars, {bundle_info['total_bundles']} bundles, {bundle_info['total_isolated']} isolated")
-                            else:
-                                st.success(f"Captured from IP. Detected rebars: {count}")
+                            st.success(f"Captured from IP. Detected rebars: {count}")
 
                             # OLED: show final count
                             try:
@@ -488,13 +474,10 @@ def page_dashboard():
                             except Exception:
                                 pass
 
-                            # Show image with caption including bundle info
-                            if bundle_info and bundle_info['total_bundles'] > 0:
-                                caption = f"Detected: {count} rebars | Bundles: {bundle_info['total_bundles']} | In Bundles: {bundle_info['total_rebars_in_bundles']} | Isolated: {bundle_info['total_isolated']}"
-                            else:
-                                caption = f"Detected rebars: {count}"
-                            
-                            show_image_full_width(processed_rgb, caption=caption)
+                            show_image_full_width(
+                                processed_rgb,
+                                caption=f"Detected rebars: {count}",
+                            )
                 else:
                     frame, oerr = grab_oak_frame(ss, wait_sec=2.0)
                     if oerr:
@@ -505,8 +488,7 @@ def page_dashboard():
                         except Exception:
                             pass
                     else:
-                        # FIX: Now receiving 4 values (processed_rgb, count, derr, bundle_info)
-                        processed_rgb, count, derr, bundle_info = detect_rebars(
+                        processed_rgb, count, derr = detect_rebars(
                             frame, model, conf=0.6, iou=0.5, max_det=10000
                         )
                         if derr:
@@ -517,33 +499,22 @@ def page_dashboard():
                             except Exception:
                                 pass
                         else:
-                            # Record detection with bundle info
                             det_id = record_detection(
                                 ss["user"]["id"],
                                 processed_rgb,
                                 count,
                                 "OAK-D Pro",
                                 "OAK-D Pro",
-                                bundle_info,  # Pass bundle_info to database
                             )
-                            
-                            # Store in session with bundle info
-                            ss["captured_images"].append({
-                                "id": det_id, 
-                                "image": processed_rgb, 
-                                "count": count,
-                                "bundle_info": bundle_info
-                            })
-                            
+                            ss["captured_images"].append(
+                                {"id": det_id, "image": processed_rgb, "count": count}
+                            )
                             MAX_CAP = 48
                             if len(ss["captured_images"]) > MAX_CAP:
                                 ss["captured_images"] = ss["captured_images"][-MAX_CAP:]
-                            
-                            # Show success message with bundle details
-                            if bundle_info and bundle_info['total_bundles'] > 0:
-                                st.success(f"Captured from OAK-D Pro. Detected: {count} rebars, {bundle_info['total_bundles']} bundles, {bundle_info['total_isolated']} isolated")
-                            else:
-                                st.success(f"Captured from OAK-D Pro. Detected rebars: {count}")
+                            st.success(
+                                f"Captured from OAK-D Pro. Detected rebars: {count}"
+                            )
 
                             # OLED: show final count
                             try:
@@ -551,13 +522,10 @@ def page_dashboard():
                             except Exception:
                                 pass
 
-                            # Show image with caption including bundle info
-                            if bundle_info and bundle_info['total_bundles'] > 0:
-                                caption = f"Detected: {count} rebars | Bundles: {bundle_info['total_bundles']} | In Bundles: {bundle_info['total_rebars_in_bundles']} | Isolated: {bundle_info['total_isolated']}"
-                            else:
-                                caption = f"Detected rebars: {count}"
-                            
-                            show_image_full_width(processed_rgb, caption=caption)
+                            show_image_full_width(
+                                processed_rgb,
+                                caption=f"Detected rebars: {count}",
+                            )
 
         # Upload Image tab
         with tab_upload:
@@ -602,8 +570,7 @@ def page_dashboard():
                         except Exception:
                             pass
                     else:
-                        # FIX: Now receiving 4 values (processed_rgb, count, derr, bundle_info)
-                        processed_rgb, count, derr, bundle_info = detect_rebars(
+                        processed_rgb, count, derr = detect_rebars(
                             img_bgr, model, conf=0.6, iou=0.5, max_det=10000
                         )
                         if derr:
@@ -614,33 +581,22 @@ def page_dashboard():
                             except Exception:
                                 pass
                         else:
-                            # Record detection with bundle info
                             det_id = record_detection(
                                 ss["user"]["id"],
                                 processed_rgb,
                                 count,
                                 "Upload",
                                 uploaded_file.name or "Uploaded Image",
-                                bundle_info,  # Pass bundle_info to database
                             )
-                            
-                            # Store in session with bundle info
-                            ss["captured_images"].append({
-                                "id": det_id, 
-                                "image": processed_rgb, 
-                                "count": count,
-                                "bundle_info": bundle_info
-                            })
-                            
+                            ss["captured_images"].append(
+                                {"id": det_id, "image": processed_rgb, "count": count}
+                            )
                             MAX_CAP = 48
                             if len(ss["captured_images"]) > MAX_CAP:
                                 ss["captured_images"] = ss["captured_images"][-MAX_CAP:]
-                            
-                            # Show success message with bundle details
-                            if bundle_info and bundle_info['total_bundles'] > 0:
-                                st.success(f"Uploaded image processed. Detected: {count} rebars, {bundle_info['total_bundles']} bundles, {bundle_info['total_isolated']} isolated")
-                            else:
-                                st.success(f"Uploaded image processed. Detected rebars: {count}")
+                            st.success(
+                                f"Uploaded image processed. Detected rebars: {count}"
+                            )
 
                             # OLED: show final count
                             try:
@@ -648,13 +604,10 @@ def page_dashboard():
                             except Exception:
                                 pass
 
-                            # Show image with caption including bundle info
-                            if bundle_info and bundle_info['total_bundles'] > 0:
-                                caption = f"Detected: {count} rebars | Bundles: {bundle_info['total_bundles']} | In Bundles: {bundle_info['total_rebars_in_bundles']} | Isolated: {bundle_info['total_isolated']}"
-                            else:
-                                caption = f"Detected rebars: {count}"
-                            
-                            show_image_full_width(processed_rgb, caption=caption)
+                            show_image_full_width(
+                                processed_rgb,
+                                caption=f"Detected rebars: {count}",
+                            )
 
     # Gallery
     if ss["captured_images"]:
@@ -665,26 +618,18 @@ def page_dashboard():
             )
             if not data_uri:
                 continue
-            
-            # Create badge text with bundle info if available
-            if item.get("bundle_info") and item["bundle_info"].get('total_bundles', 0) > 0:
-                bundle = item["bundle_info"]
-                badge_text = f"Count: {item['count']} | B:{bundle['total_bundles']} I:{bundle['total_isolated']}"
-            else:
-                badge_text = f"Count: {item['count']}"
-            
             cards.append(
                 '<div class="shot-card">'
-                f'<span class="shot-badge">{badge_text}</span>'
+                f'<span class="shot-badge">Counts: {item["count"]}</span>'
                 f'<img src="{data_uri}" alt="Detection"/>'
-                f'<div class="shot-footer">{badge_text}</div>'
+                f'<div class="shot-footer">Detected rebars: {item["count"]}</div>'
                 "</div>"
             )
         gallery_html = '<div class="shot-grid">' + "".join(cards) + "</div>"
     else:
         gallery_html = (
             '<div style="color:#d7e2ff;">No captures yet. '
-            'Click "Capture & Count" or upload an image.</div>'
+            "Click \"Capture & Count\" or upload an image.</div>"
         )
 
     st.markdown(
@@ -732,13 +677,13 @@ def page_history():
             "<h2 class='gradient-heading' style='margin:0 0 6px 0;'>Detection History Records</h2>",
             unsafe_allow_html=True,
         )
-        st.caption("Comprehensive log of all captured detections with bundle analysis.")
+        st.caption("Comprehensive log of all captured detections.")
 
         rows, total = list_detections(ss["user"]["id"], ss["hist_page"], PER_PAGE)
         total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
 
         st.markdown('<div class="table-like">', unsafe_allow_html=True)
-        col_widths = [0.8, 1.6, 2.6, 0.9, 0.6, 0.6, 1.2]  # Added column for bundle info
+        col_widths = [0.8, 1.6, 2.6, 0.9, 0.6, 1.2]
 
         hcols = st.columns(col_widths, gap="small")
         hcols[0].markdown('<div class="th">ID</div>', unsafe_allow_html=True)
@@ -746,8 +691,7 @@ def page_history():
         hcols[2].markdown('<div class="th">Stream URL</div>', unsafe_allow_html=True)
         hcols[3].markdown('<div class="th">Snapshot</div>', unsafe_allow_html=True)
         hcols[4].markdown('<div class="th">Count</div>', unsafe_allow_html=True)
-        hcols[5].markdown('<div class="th">Bundles</div>', unsafe_allow_html=True)  # New column
-        hcols[6].markdown('<div class="th">Actions</div>', unsafe_allow_html=True)
+        hcols[5].markdown('<div class="th">Actions</div>', unsafe_allow_html=True)
 
         base_index = (ss["hist_page"] - 1) * PER_PAGE
 
@@ -756,16 +700,6 @@ def page_history():
             serial_label = f"ID {serial_desc:02d}"
             local_time = fmt_local_time(r["timestamp"])
             thumb_uri = file_to_data_uri(r["thumb_path"], max_w=90)
-            
-            # Parse bundle info
-            bundle_display = "-"
-            if r.get("bundle_info"):
-                import json
-                try:
-                    bi = json.loads(r["bundle_info"]) if isinstance(r["bundle_info"], str) else r["bundle_info"]
-                    bundle_display = f"{bi.get('total_bundles', 0)}B / {bi.get('isolated', 0)}I"
-                except:
-                    pass
 
             rcols = st.columns(col_widths, gap="small")
             rcols[0].markdown(
@@ -790,11 +724,8 @@ def page_history():
             rcols[4].markdown(
                 f'<div class="td">{r["count"]}</div>', unsafe_allow_html=True
             )
-            rcols[5].markdown(
-                f'<div class="td">{bundle_display}</div>', unsafe_allow_html=True
-            )
 
-            with rcols[6]:
+            with rcols[5]:
                 _wrap_top = st.markdown('<div class="td">', unsafe_allow_html=True)
                 cc1, cc2 = st.columns([1, 1])
                 with cc1:
@@ -802,19 +733,10 @@ def page_history():
                         if os.path.exists(r["image_path"]):
                             img = cv2.imread(r["image_path"])
                             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                            
-                            # Create caption with bundle info if available
-                            if r.get("bundle_info"):
-                                import json
-                                try:
-                                    bi = json.loads(r["bundle_info"]) if isinstance(r["bundle_info"], str) else r["bundle_info"]
-                                    caption = f"Detection {r['id']} — Count: {r['count']} | Bundles: {bi.get('total_bundles', 0)} | In Bundles: {bi.get('rebars_in_bundles', 0)} | Isolated: {bi.get('isolated', 0)}"
-                                except:
-                                    caption = f"Detection {r['id']} — Count: {r['count']}"
-                            else:
-                                caption = f"Detection {r['id']} — Count: {r['count']}"
-                            
-                            show_image_full_width(img_rgb, caption=caption)
+                            show_image_full_width(
+                                img_rgb,
+                                caption=f"Detection {r['id']} — Count: {r['count']}",
+                            )
                 with cc2:
                     if st.button("Delete", key=f"del_{r['id']}"):
                         if delete_detection(r["id"], ss["user"]["id"]):

@@ -11,3 +11,4 @@ luma.oled
 
 # Image handling (usually pulled in by the above, but explicit is safer)
 Pillow
+scikit-learn

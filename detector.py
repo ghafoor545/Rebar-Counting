@@ -1,17 +1,285 @@
 import os
 import uuid
 import base64
-from typing import Optional
-
-import cv2
+from typing import Optional, List, Tuple, Dict, Any
 import numpy as np
+import cv2
 import requests
 import onnxruntime as ort
 import streamlit as st
+from sklearn.cluster import DBSCAN
 
 from config import MODEL_PATH, DET_DIR, THUMB_DIR
 from db import get_conn
 from utils import utc_now_iso
+
+
+# ------------------------------
+# Bundle Detector Class
+# ------------------------------
+class RebarBundleDetector:
+    """
+    Detects bundles of rebars based on proximity clustering
+    Bundle definition: 5 or more rebars close to each other
+    Less than 5 rebars together are considered isolated
+    
+    ID Assignment Rules:
+    - Each bundle has its own separate numbering (1,2,3... within the bundle)
+    - Within each bundle: IDs assigned row-wise, left to right
+    - Isolated rebars: sequential numbers (continuing from bundles)
+    """
+    
+    def __init__(self, 
+                 eps: float = 100.0,  # Distance threshold for clustering (pixels)
+                 min_bundle_size: int = 5,  # Minimum rebars to form a bundle
+                 min_samples: int = 2,  # Min samples for DBSCAN
+                 row_tolerance: float = 40.0,  # Pixel tolerance for same row
+                 use_adaptive_eps: bool = True):  # Use adaptive eps based on rebar sizes
+        """
+        Initialize the bundle detector
+        """
+        self.eps = eps
+        self.min_bundle_size = min_bundle_size
+        self.min_samples = min_samples
+        self.row_tolerance = row_tolerance
+        self.use_adaptive_eps = use_adaptive_eps
+        
+    def detect_bundles(self, boxes: np.ndarray) -> Dict[str, Any]:
+        """
+        Detect bundles from detected rebar boxes and assign bundle-specific IDs
+        IDs are assigned left-to-right in rows, top-to-bottom WITHIN EACH BUNDLE
+        
+        Args:
+            boxes: Array of bounding boxes in format [x1, y1, x2, y2]
+            
+        Returns:
+            Dictionary containing bundle information with simple ID mapping
+        """
+        if len(boxes) == 0:
+            return {
+                'bundles': [],
+                'isolated_rebars': [],
+                'total_bundles': 0,
+                'total_rebars_in_bundles': 0,
+                'total_isolated': 0,
+                'total_count': 0,
+                'id_mapping': {},
+                'display_summary': {
+                    'total': 0,
+                    'bundles': 0,
+                    'rebars_in_bundles': 0,
+                    'isolated': 0
+                }
+            }
+        
+        # Calculate centers and sizes of all boxes
+        centers, sizes = self._get_box_centers_and_sizes(boxes)
+        
+        # Calculate adaptive eps based on rebar sizes if enabled
+        eps_to_use = self.eps
+        if self.use_adaptive_eps:
+            avg_size = np.mean(sizes)
+            eps_to_use = max(self.eps, avg_size * 2.5)  # At least 2.5x average rebar size
+        
+        # Perform clustering using DBSCAN with adaptive eps
+        clustering = DBSCAN(eps=eps_to_use, min_samples=self.min_samples).fit(centers)
+        labels = clustering.labels_
+        
+        # Count rebars in each cluster
+        unique, counts = np.unique(labels, return_counts=True)
+        cluster_sizes = dict(zip(unique, counts))
+        
+        # Process clusters
+        bundles = []
+        isolated_rebars = []
+        id_mapping = {}
+        
+        # Get unique cluster labels (-1 indicates noise/isolated points)
+        unique_labels = set(labels)
+        bundle_counter = 0
+        isolated_counter = 0
+        
+        # First, identify which clusters should be bundles (5+ rebars)
+        bundle_clusters = []
+        for label in unique_labels:
+            if label != -1 and cluster_sizes[label] >= self.min_bundle_size:
+                bundle_clusters.append(label)
+        
+        # Now process bundles
+        for label in bundle_clusters:
+            cluster_indices = np.where(labels == label)[0]
+            cluster_size = len(cluster_indices)
+            
+            # This is a valid bundle
+            bundle_counter += 1
+            
+            # Get all boxes and centers in this cluster
+            cluster_boxes = boxes[cluster_indices]
+            cluster_centers = centers[cluster_indices]
+            
+            # Sort rebars within bundle: by row (top to bottom), then left to right within each row
+            sorted_indices = self._sort_rebars_rowwise_left_to_right(cluster_indices, cluster_centers)
+            
+            # Create bundle info with bundle-specific indices (starting from 1)
+            bundle_rebars = []
+            for bundle_idx, global_idx in enumerate(sorted_indices, start=1):
+                
+                rebar_info = {
+                    'global_index': int(global_idx),
+                    'bundle_index': bundle_idx,
+                    'display_id': bundle_idx,
+                    'box': boxes[global_idx].tolist(),
+                    'center': centers[global_idx].tolist(),
+                    'row': self._get_row_number(centers[global_idx], cluster_centers)
+                }
+                bundle_rebars.append(rebar_info)
+                
+                id_mapping[int(global_idx)] = {
+                    'display_id': bundle_idx,
+                    'bundle_id': bundle_counter,
+                    'bundle_index': bundle_idx,
+                    'type': 'bundle',
+                    'group_size': cluster_size
+                }
+            
+            # Calculate bundle stats
+            all_x1 = boxes[cluster_indices, 0]
+            all_y1 = boxes[cluster_indices, 1]
+            all_x2 = boxes[cluster_indices, 2]
+            all_y2 = boxes[cluster_indices, 3]
+            
+            bundle_info = {
+                'bundle_id': bundle_counter,
+                'size': cluster_size,
+                'rebars': bundle_rebars,
+                'global_indices': sorted_indices.tolist(),
+                'bounds': [
+                    float(np.min(all_x1)),
+                    float(np.min(all_y1)),
+                    float(np.max(all_x2)),
+                    float(np.max(all_y2))
+                ]
+            }
+            bundles.append(bundle_info)
+        
+        # Now handle isolated rebars (all remaining rebars)
+        all_processed_indices = set()
+        for bundle in bundles:
+            all_processed_indices.update(bundle['global_indices'])
+        
+        # Get all indices not in any bundle
+        isolated_indices = [i for i in range(len(boxes)) if i not in all_processed_indices]
+        
+        if isolated_indices:
+            # Sort isolated rebars row-wise left to right
+            isolated_centers = centers[isolated_indices]
+            sorted_isolated = self._sort_rebars_rowwise_left_to_right(np.array(isolated_indices), isolated_centers)
+            
+            for display_idx, global_idx in enumerate(sorted_isolated, start=1):
+                rebar_info = {
+                    'global_index': int(global_idx),
+                    'display_id': display_idx,
+                    'box': boxes[global_idx].tolist(),
+                    'center': centers[global_idx].tolist(),
+                    'type': 'isolated',
+                    'group_size': 1
+                }
+                isolated_rebars.append(rebar_info)
+                
+                id_mapping[int(global_idx)] = {
+                    'display_id': display_idx,
+                    'type': 'isolated',
+                    'group_size': 1
+                }
+        
+        # Prepare summary
+        total_rebars_in_bundles = sum(b['size'] for b in bundles)
+        total_isolated = len(isolated_rebars)
+        
+        return {
+            'bundles': bundles,
+            'isolated_rebars': isolated_rebars,
+            'total_bundles': len(bundles),
+            'total_rebars_in_bundles': total_rebars_in_bundles,
+            'total_isolated': total_isolated,
+            'total_count': len(boxes),
+            'id_mapping': id_mapping,
+            'display_summary': {
+                'total': len(boxes),
+                'bundles': len(bundles),
+                'rebars_in_bundles': total_rebars_in_bundles,
+                'isolated': total_isolated
+            }
+        }
+    
+    def _sort_rebars_rowwise_left_to_right(self, indices, centers):
+        """
+        Sort rebars by row (top to bottom) and left to right within each row
+        """
+        if len(indices) <= 1:
+            return indices
+        
+        # Create list of (index, center) pairs
+        pairs = list(zip(indices, centers))
+        
+        # Sort by y-coordinate first
+        pairs.sort(key=lambda x: x[1][1])
+        
+        # Group into rows
+        rows = []
+        current_row = []
+        current_y = pairs[0][1][1]
+        
+        for idx, center in pairs:
+            if abs(center[1] - current_y) <= self.row_tolerance:
+                current_row.append((idx, center))
+            else:
+                if current_row:
+                    current_row.sort(key=lambda x: x[1][0])  # Sort by x (left to right)
+                    rows.extend([idx for idx, _ in current_row])
+                
+                current_row = [(idx, center)]
+                current_y = center[1]
+        
+        if current_row:
+            current_row.sort(key=lambda x: x[1][0])
+            rows.extend([idx for idx, _ in current_row])
+        
+        return np.array(rows)
+    
+    def _get_row_number(self, center, all_centers):
+        """Determine which row this rebar belongs to"""
+        y_coords = sorted(set([c[1] for c in all_centers]))
+        for i, y in enumerate(y_coords):
+            if abs(center[1] - y) <= self.row_tolerance:
+                return i + 1
+        return 0
+    
+    def _get_box_centers_and_sizes(self, boxes: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate centers and approximate sizes of bounding boxes"""
+        centers = []
+        sizes = []
+        for box in boxes:
+            x1, y1, x2, y2 = box[:4]
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            centers.append([center_x, center_y])
+            
+            # Calculate approximate size (diagonal)
+            size = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            sizes.append(size)
+            
+        return np.array(centers), np.array(sizes)
+
+
+# Initialize global bundle detector
+bundle_detector = RebarBundleDetector(
+    eps=100.0,
+    min_bundle_size=5,
+    min_samples=2,
+    row_tolerance=40.0,
+    use_adaptive_eps=True
+)
 
 
 # ------------------------------
@@ -254,113 +522,208 @@ def preprocess_for_onnx(image_bgr, in_hw):
     return img, r, dwdh
 
 
-def draw_centered_ids(image_bgr, boxes):
+def draw_simple_black_frame(img, summary):
     """
-    Draw perfectly centered white IDs on detected boxes
-    with adaptive font size for both close-up and far shots
+    Draw a simple small black frame in top-left corner with white text
+    """
+    height, width = img.shape[:2]
+    
+    # Small frame dimensions
+    frame_width = 220
+    frame_height = 140
+    padding = 10
+    
+    # Frame position (top-left corner)
+    x1, y1 = 10, 10
+    x2, y2 = x1 + frame_width, y1 + frame_height
+    
+    # Draw semi-transparent black background
+    overlay = img.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 0), -1)
+    
+    # Apply transparency (70% opaque)
+    alpha = 0.7
+    cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+    
+    # Draw simple white border
+    cv2.rectangle(img, (x1, y1), (x2, y2), (255, 255, 255), 1)
+    
+    # Add title
+    title = "REBAR ANALYSIS"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(img, title, (x1 + 15, y1 + 25), font, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # Add separator line
+    cv2.line(img, (x1 + 10, y1 + 35), (x2 - 10, y1 + 35), (255, 255, 255), 1)
+    
+    # Add statistics
+    y_offset = y1 + 50
+    line_height = 18
+    
+    # Total
+    cv2.putText(img, f"TOTAL: {summary['total']}", (x1 + 15, y_offset), font, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # Bundles
+    y_offset += line_height
+    cv2.putText(img, f"BUNDLES: {summary['bundles']}", (x1 + 15, y_offset), font, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # In Bundles
+    y_offset += line_height
+    cv2.putText(img, f"IN BUNDLES: {summary['rebars_in_bundles']}", (x1 + 15, y_offset), font, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # Isolated
+    y_offset += line_height
+    cv2.putText(img, f"ISOLATED: {summary['isolated']}", (x1 + 15, y_offset), font, 0.4, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    return img
+
+
+def draw_centered_ids_with_bundles(image_bgr, boxes, bundle_info=None):
+    """
+    Draw perfectly centered white IDs on detected boxes with bundle information
     """
     img = image_bgr.copy()
     img_height, img_width = img.shape[:2]
     
-    # Sort boxes by y-coordinate (top to bottom), then by x (left to right)
-    sorted_boxes = sorted(boxes, key=lambda b: (int(b[1]), int(b[0])))
-    
-    for idx, box in enumerate(sorted_boxes, start=1):
+    # Draw all boxes with light green
+    for box in boxes:
         x1, y1, x2, y2 = map(int, box[:4])
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green boxes
+    
+    if bundle_info and bundle_info['total_count'] > 0:
+        # Draw IDs using bundle_info mapping
+        for global_idx, id_info in bundle_info['id_mapping'].items():
+            if global_idx < len(boxes):
+                box = boxes[global_idx]
+                x1, y1, x2, y2 = map(int, box[:4])
+                
+                # Calculate box dimensions for adaptive font
+                box_width = x2 - x1
+                box_height = y2 - y1
+                box_size = min(box_width, box_height)
+                
+                # Adaptive font scale based on box size
+                if box_size < 25:
+                    font_scale = 0.25
+                    thickness = 1
+                elif box_size < 40:
+                    font_scale = 0.3
+                    thickness = 1
+                elif box_size < 70:
+                    font_scale = 0.35
+                    thickness = 1
+                elif box_size < 120:
+                    font_scale = 0.4
+                    thickness = 2
+                elif box_size < 200:
+                    font_scale = 0.5
+                    thickness = 2
+                else:
+                    font_scale = 0.6
+                    thickness = 2
+                
+                # Display ID - simple number
+                display_id = str(id_info['display_id'])
+                
+                # Center coordinates
+                cx = int((x1 + x2) / 2)
+                cy = int((y1 + y2) / 2)
+                
+                # Get text size
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                (text_w, text_h), _ = cv2.getTextSize(
+                    display_id, font, font_scale, thickness
+                )
+                
+                # Draw black background for text
+                padding = max(2, int(font_scale * 3))
+                bg_x1 = max(0, cx - text_w//2 - padding)
+                bg_y1 = max(0, cy - text_h//2 - padding)
+                bg_x2 = min(img_width, cx + text_w//2 + padding)
+                bg_y2 = min(img_height, cy + text_h//2 + padding)
+                
+                # Draw black background
+                cv2.rectangle(
+                    img,
+                    (bg_x1, bg_y1),
+                    (bg_x2, bg_y2),
+                    (0, 0, 0),
+                    -1
+                )
+                
+                # Draw white text
+                cv2.putText(
+                    img,
+                    display_id,
+                    (cx - text_w//2, cy + text_h//2),
+                    font,
+                    font_scale,
+                    (255, 255, 255),
+                    thickness,
+                    cv2.LINE_AA
+                )
         
-        # Calculate box dimensions
-        box_width = x2 - x1
-        box_height = y2 - y1
-        box_size = min(box_width, box_height)
+        # Draw simple black corner frame with summary
+        img = draw_simple_black_frame(img, bundle_info['display_summary'])
         
-        # Smart adaptive font scaling based on box size
-        if box_size < 25:  # Very small boxes (far shots)
-            font_scale = 0.25
-            thickness = 1
-        elif box_size < 40:  # Small boxes
-            font_scale = 0.3
-            thickness = 1
-        elif box_size < 70:  # Medium boxes
-            font_scale = 0.4
-            thickness = 1
-        elif box_size < 120:  # Large boxes
-            font_scale = 0.5
-            thickness = 2
-        elif box_size < 200:  # Very large boxes
-            font_scale = 0.7
-            thickness = 2
-        else:  # Extremely large boxes (very close-up shots)
-            font_scale = 0.9
-            thickness = 3
-        
-        # Center coordinates
-        center_x = int((x1 + x2) / 2)
-        center_y = int((y1 + y2) / 2)
-        
-        # ID text
-        id_text = str(idx)
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        
-        # Get text size for perfect centering
-        (text_width, text_height), baseline = cv2.getTextSize(
-            id_text, font, font_scale, thickness
-        )
-        
-        # Ensure text fits within box (reduce font if needed)
-        max_text_width = box_width * 0.8
-        max_text_height = box_height * 0.8
-        
-        if text_width > max_text_width or text_height > max_text_height:
-            # Reduce font size proportionally
-            width_ratio = max_text_width / text_width if text_width > 0 else 1
-            height_ratio = max_text_height / text_height if text_height > 0 else 1
-            reduction_factor = min(width_ratio, height_ratio) * 0.9
+    else:
+        # Simple numbering (no bundles detected)
+        for idx, box in enumerate(boxes, start=1):
+            x1, y1, x2, y2 = map(int, box[:4])
             
-            font_scale = font_scale * reduction_factor
-            thickness = max(1, int(thickness * reduction_factor))
+            # Adaptive font scale
+            box_size = min(x2-x1, y2-y1)
+            if box_size < 30:
+                font_scale = 0.3
+                thickness = 1
+            elif box_size < 60:
+                font_scale = 0.4
+                thickness = 1
+            else:
+                font_scale = 0.5
+                thickness = 2
             
-            # Recalculate text size
-            (text_width, text_height), baseline = cv2.getTextSize(
-                id_text, font, font_scale, thickness
+            # Center
+            cx = int((x1 + x2) / 2)
+            cy = int((y1 + y2) / 2)
+            
+            # Draw ID with background
+            id_text = str(idx)
+            (text_w, text_h), _ = cv2.getTextSize(
+                id_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+            )
+            
+            # Background
+            cv2.rectangle(
+                img,
+                (cx - text_w//2 - 2, cy - text_h//2 - 2),
+                (cx + text_w//2 + 2, cy + text_h//2 + 2),
+                (0, 0, 0),
+                -1
+            )
+            
+            # Text
+            cv2.putText(
+                img,
+                id_text,
+                (cx - text_w//2, cy + text_h//2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                thickness,
+                cv2.LINE_AA
             )
         
-        # Calculate perfect centered position
-        text_x = center_x - text_width // 2
-        text_y = center_y + text_height // 2
-        
-        # Ensure text stays within image bounds
-        text_x = max(0, min(text_x, img_width - text_width))
-        text_y = max(text_height, min(text_y, img_height))
-        
-        # Draw subtle black background for better readability
-        padding = max(2, int(font_scale * 3))
-        bg_x1 = max(0, text_x - padding)
-        bg_y1 = max(0, text_y - text_height - padding)
-        bg_x2 = min(img_width, text_x + text_width + padding)
-        bg_y2 = min(img_height, text_y + padding)
-        
-        # Draw background rectangle
-        cv2.rectangle(
-            img,
-            (bg_x1, bg_y1),
-            (bg_x2, bg_y2),
-            (0, 0, 0),  # Black
-            -1  # Filled
-        )
-        
-        # Draw white ID text (perfectly centered)
-        cv2.putText(
-            img,
-            id_text,
-            (text_x, text_y),
-            font,
-            font_scale,
-            (255, 255, 255),  # White
-            thickness,
-            cv2.LINE_AA
-        )
+        # Add simple frame with total
+        summary = {
+            'total': len(boxes),
+            'bundles': 0,
+            'rebars_in_bundles': 0,
+            'isolated': len(boxes)
+        }
+        img = draw_simple_black_frame(img, summary)
     
-    return img, sorted_boxes
+    return img, boxes
 
 
 def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000):
@@ -477,16 +840,15 @@ def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000
                     b_xyxy = b_xyxy[keep]
                     dets_xyxy = b_xyxy.tolist()
 
-        # Draw bounding boxes AND centered white IDs
+        # Detect bundles from detections
+        bundle_info = None
         if dets_xyxy:
-            # First draw boxes (optional - you can keep this or remove)
-            annotated = image_bgr.copy()
-            for (x1, y1, x2, y2) in dets_xyxy:
-                x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-                cv2.rectangle(annotated, (x1, y1), (x2, y2), (80, 250, 180), 1)
+            # Convert to numpy array for bundle detection
+            boxes_array = np.array(dets_xyxy)
+            bundle_info = bundle_detector.detect_bundles(boxes_array)
             
-            # Draw centered white IDs
-            annotated, sorted_boxes = draw_centered_ids(annotated, dets_xyxy)
+            # Draw bounding boxes AND centered white IDs with bundle info
+            annotated, sorted_boxes = draw_centered_ids_with_bundles(image_bgr, boxes_array, bundle_info)
             count = len(sorted_boxes)
         else:
             annotated = image_bgr.copy()
@@ -496,9 +858,15 @@ def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000
         hd = to_hd_1080p(annotated, background=(18, 24, 31))
         banner_height = 100
         img_h, img_w, _ = hd.shape
-        heading = f"Rebars detected: {count}"
+        
+        # Create banner text with bundle information
+        if bundle_info and bundle_info['total_bundles'] > 0:
+            heading = f"Rebars: {count} | Bundles: {bundle_info['total_bundles']} | In Bundles: {bundle_info['total_rebars_in_bundles']} | Isolated: {bundle_info['total_isolated']}"
+        else:
+            heading = f"Rebars detected: {count}"
+            
         font = cv2.FONT_HERSHEY_SIMPLEX
-        size, _ = cv2.getTextSize(heading, font, 2, 4)
+        size, _ = cv2.getTextSize(heading, font, 1.5, 3)
 
         # Draw white banner
         cv2.rectangle(hd, (0, 0), (img_w, banner_height), (255, 255, 255), -1)
@@ -509,17 +877,17 @@ def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000
             heading,
             ((img_w - size[0]) // 2, (banner_height + size[1]) // 2),
             font,
-            2,
+            1.5,
             (0, 0, 0),  # Black text
-            4,
+            3,
             lineType=cv2.LINE_AA,
         )
 
         # Return RGB for Streamlit
-        return cv2.cvtColor(hd, cv2.COLOR_BGR2RGB), count, None
+        return cv2.cvtColor(hd, cv2.COLOR_BGR2RGB), count, None, bundle_info
 
     except Exception as e:
-        return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB), 0, f"Detection error: {e}"
+        return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB), 0, f"Detection error: {e}", None
 
 
 # ------------------------------
@@ -542,7 +910,7 @@ def save_image_files(image_rgb: np.ndarray, det_id: str):
 
 
 def record_detection(
-    user_id: int, processed_rgb: np.ndarray, count: int, stream_url: str, snapshot_url: str
+    user_id: int, processed_rgb: np.ndarray, count: int, stream_url: str, snapshot_url: str, bundle_info: dict = None
 ):
     det_id = str(uuid.uuid4())
     img_path, thumb_path = save_image_files(processed_rgb, det_id)
@@ -550,13 +918,24 @@ def record_detection(
 
     conn = get_conn()
     cur = conn.cursor()
+    
+    # Store bundle info as JSON if available
+    bundle_json = None
+    if bundle_info:
+        import json
+        bundle_json = json.dumps({
+            'total_bundles': bundle_info['total_bundles'],
+            'rebars_in_bundles': bundle_info['total_rebars_in_bundles'],
+            'isolated': bundle_info['total_isolated']
+        })
+    
     cur.execute(
         """
         INSERT INTO detections (
             id, user_id, timestamp, stream_url, snapshot_url,
-            image_path, thumb_path, count, width, height
+            image_path, thumb_path, count, width, height, bundle_info
         )
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             det_id,
@@ -569,6 +948,7 @@ def record_detection(
             count,
             w,
             h,
+            bundle_json
         ),
     )
     conn.commit()
@@ -599,6 +979,15 @@ def get_detection(det_id: str, user_id: int):
     )
     row = cur.fetchone()
     conn.close()
+    
+    # Parse bundle_info JSON if exists
+    if row and row.get('bundle_info'):
+        import json
+        try:
+            row['bundle_info'] = json.loads(row['bundle_info'])
+        except:
+            pass
+    
     return row
 
 
