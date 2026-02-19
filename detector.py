@@ -254,6 +254,115 @@ def preprocess_for_onnx(image_bgr, in_hw):
     return img, r, dwdh
 
 
+def draw_centered_ids(image_bgr, boxes):
+    """
+    Draw perfectly centered white IDs on detected boxes
+    with adaptive font size for both close-up and far shots
+    """
+    img = image_bgr.copy()
+    img_height, img_width = img.shape[:2]
+    
+    # Sort boxes by y-coordinate (top to bottom), then by x (left to right)
+    sorted_boxes = sorted(boxes, key=lambda b: (int(b[1]), int(b[0])))
+    
+    for idx, box in enumerate(sorted_boxes, start=1):
+        x1, y1, x2, y2 = map(int, box[:4])
+        
+        # Calculate box dimensions
+        box_width = x2 - x1
+        box_height = y2 - y1
+        box_size = min(box_width, box_height)
+        
+        # Smart adaptive font scaling based on box size
+        if box_size < 25:  # Very small boxes (far shots)
+            font_scale = 0.25
+            thickness = 1
+        elif box_size < 40:  # Small boxes
+            font_scale = 0.3
+            thickness = 1
+        elif box_size < 70:  # Medium boxes
+            font_scale = 0.4
+            thickness = 1
+        elif box_size < 120:  # Large boxes
+            font_scale = 0.5
+            thickness = 2
+        elif box_size < 200:  # Very large boxes
+            font_scale = 0.7
+            thickness = 2
+        else:  # Extremely large boxes (very close-up shots)
+            font_scale = 0.9
+            thickness = 3
+        
+        # Center coordinates
+        center_x = int((x1 + x2) / 2)
+        center_y = int((y1 + y2) / 2)
+        
+        # ID text
+        id_text = str(idx)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        
+        # Get text size for perfect centering
+        (text_width, text_height), baseline = cv2.getTextSize(
+            id_text, font, font_scale, thickness
+        )
+        
+        # Ensure text fits within box (reduce font if needed)
+        max_text_width = box_width * 0.8
+        max_text_height = box_height * 0.8
+        
+        if text_width > max_text_width or text_height > max_text_height:
+            # Reduce font size proportionally
+            width_ratio = max_text_width / text_width if text_width > 0 else 1
+            height_ratio = max_text_height / text_height if text_height > 0 else 1
+            reduction_factor = min(width_ratio, height_ratio) * 0.9
+            
+            font_scale = font_scale * reduction_factor
+            thickness = max(1, int(thickness * reduction_factor))
+            
+            # Recalculate text size
+            (text_width, text_height), baseline = cv2.getTextSize(
+                id_text, font, font_scale, thickness
+            )
+        
+        # Calculate perfect centered position
+        text_x = center_x - text_width // 2
+        text_y = center_y + text_height // 2
+        
+        # Ensure text stays within image bounds
+        text_x = max(0, min(text_x, img_width - text_width))
+        text_y = max(text_height, min(text_y, img_height))
+        
+        # Draw subtle black background for better readability
+        padding = max(2, int(font_scale * 3))
+        bg_x1 = max(0, text_x - padding)
+        bg_y1 = max(0, text_y - text_height - padding)
+        bg_x2 = min(img_width, text_x + text_width + padding)
+        bg_y2 = min(img_height, text_y + padding)
+        
+        # Draw background rectangle
+        cv2.rectangle(
+            img,
+            (bg_x1, bg_y1),
+            (bg_x2, bg_y2),
+            (0, 0, 0),  # Black
+            -1  # Filled
+        )
+        
+        # Draw white ID text (perfectly centered)
+        cv2.putText(
+            img,
+            id_text,
+            (text_x, text_y),
+            font,
+            font_scale,
+            (255, 255, 255),  # White
+            thickness,
+            cv2.LINE_AA
+        )
+    
+    return img, sorted_boxes
+
+
 def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000):
     try:
         sess = model["sess"]
@@ -368,14 +477,20 @@ def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000
                     b_xyxy = b_xyxy[keep]
                     dets_xyxy = b_xyxy.tolist()
 
-        # Draw ONLY bounding boxes
-        annotated = image_bgr.copy()
-        dets_sorted = sorted(dets_xyxy, key=lambda bb: bb[1]) if dets_xyxy else []
-        for (x1, y1, x2, y2) in dets_sorted:
-            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), (80, 250, 180), 1)
-
-        count = len(dets_sorted)
+        # Draw bounding boxes AND centered white IDs
+        if dets_xyxy:
+            # First draw boxes (optional - you can keep this or remove)
+            annotated = image_bgr.copy()
+            for (x1, y1, x2, y2) in dets_xyxy:
+                x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (80, 250, 180), 1)
+            
+            # Draw centered white IDs
+            annotated, sorted_boxes = draw_centered_ids(annotated, dets_xyxy)
+            count = len(sorted_boxes)
+        else:
+            annotated = image_bgr.copy()
+            count = 0
 
         # Compose into 1080p frame with banner
         hd = to_hd_1080p(annotated, background=(18, 24, 31))
@@ -385,14 +500,17 @@ def detect_rebars(image_bgr, model, class_id=0, conf=0.6, iou=0.5, max_det=10000
         font = cv2.FONT_HERSHEY_SIMPLEX
         size, _ = cv2.getTextSize(heading, font, 2, 4)
 
+        # Draw white banner
         cv2.rectangle(hd, (0, 0), (img_w, banner_height), (255, 255, 255), -1)
+        
+        # Draw black text on white banner
         cv2.putText(
             hd,
             heading,
             ((img_w - size[0]) // 2, (banner_height + size[1]) // 2),
             font,
             2,
-            (0, 0, 0),
+            (0, 0, 0),  # Black text
             4,
             lineType=cv2.LINE_AA,
         )
